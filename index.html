@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>打地鼠网页版</title>
+<style>
+    body { background: #8adea5; margin: 0; }
+    #game { display: block; margin: 32px auto; background: #fff; border-radius: 16px; }
+    .reset-btn {
+        position: absolute;
+        left: 50%;
+        top: 52%;
+        transform: translate(-50%, 0);
+        padding: 12px 60px;
+        background: #aad7fa;
+        border-radius: 20px;
+        font-size: 32px;
+        color: #2060ca;
+        border: none;
+        display: none;
+        z-index: 100;
+        cursor: pointer;
+    }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="600"></canvas>
+<button id="resetBtn" class="reset-btn">重新开始</button>
+
+<script>
+// 资源配置部分，根据你的图片文件名调整
+const MOLE_SRC = "mole.png";    // 地鼠图片
+const HOLE_SRC = "hole.png";    // 洞口图片
+const HAMMER_SRC = "hammer.png";// 锤子图片
+const BG_SRC = "background.jpg";// 背景图片
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const resetBtn = document.getElementById('resetBtn');
+
+// 加载图片
+const imgs = {mole:null, hole:null, hammer:null, bg:null};
+let loaded = 0;
+function loadPic(name, src, cb) { const img = new Image(); img.onload = ()=>{imgs[name]=img; loaded++;cb&&cb();};img.src=src; }
+loadPic('mole', MOLE_SRC);
+loadPic('hole', HOLE_SRC);
+loadPic('hammer', HAMMER_SRC);
+loadPic('bg', BG_SRC);
+
+function waitImages(cb) {
+    if (loaded<4) setTimeout(()=>waitImages(cb),100);
+    else cb();
+}
+
+// 游戏状态变量
+let mole, hammer, holes, gameover, score, life, startTime, nextMoleTimer, moleTimer, hammerAnim;
+let appearInterval, moleDuration;
+let mouseX=400, mouseY=300;
+
+// 洞生成（5行3列错落分布）
+function generateHoles(rows=5,cols=3) {
+    let arr = [];
+    let holeW = 100, holeH = 60, marginX = 50, marginY = 80;
+    let spaceX = (canvas.width - 2*marginX - cols*holeW) / (cols-1);
+    let spaceY = (canvas.height - 2*marginY - rows*holeH) / (rows-1);
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+        let xoffset = Math.random()*30-15;
+        let yoffset = Math.random()*30-15;
+        let x = marginX + c*(holeW+spaceX) + ((r%2)?holeW/2:0) + xoffset;
+        let y = marginY + r*(holeH+spaceY) + yoffset;
+        arr.push({x:x,y:y});
+    }
+    return arr;
+}
+
+function newGame(){
+    holes = generateHoles();
+    mole = {index:-1, visible:false, x:0, y:0, w:80, h:80};
+    hammer = {x:canvas.width/2, y:canvas.height/2, w:80, h:80, time:0, animate:false};
+    gameover=false;score=0;life=5;startTime=Date.now();
+    nextMoleTimer=0; moleTimer=0; hammerAnim=0;
+    appearInterval=700;moleDuration=900;
+    showBtn(false);
+    newMole();
+}
+
+function newMole(){
+    let idx = Math.floor(Math.random()*holes.length);
+    let pos = holes[idx];
+    mole.index=idx; mole.visible=true;
+    mole.x = pos.x+50; mole.y = pos.y+55; // 洞口中心偏底
+    moleTimer = Date.now();
+}
+
+function hideMole(){
+    mole.visible=false; nextMoleTimer=Date.now();
+}
+
+// 绘制所有内容
+function drawGame(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(imgs.bg,0,0,canvas.width,canvas.height);
+    for(const h of holes) ctx.drawImage(imgs.hole,h.x,h.y,100,60);
+    if(mole.visible)
+        ctx.drawImage(imgs.mole,mole.x-mole.w/2,mole.y-mole.h,mole.w,mole.h);
+    // 锤子动画
+    let hammerW = hammer.w, hammerH = hammer.h;
+    if(hammer.animate && Date.now()-hammer.time<120){
+        hammerW*=1.4; hammerH*=1.4;
+    }
+    ctx.drawImage(imgs.hammer,mouseX-hammerW/2,mouseY-hammerH/2,hammerW,hammerH);
+    // 文本
+    ctx.font="36px 'Microsoft YaHei','SimHei',sans-serif";
+    ctx.fillStyle="#000";
+    ctx.fillText("得分: "+score,20,40);
+    ctx.fillStyle="#268";
+    ctx.fillText("速度: "+(1000/appearInterval).toFixed(2)+"次/秒",20,80);
+    ctx.fillStyle="#d44";
+    ctx.fillText("生命: "+life,20,120);
+    // 结束界面
+    if(gameover){
+        ctx.fillStyle="rgba(220,200,200,0.94)";
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle="#e24";
+        ctx.font="48px 'Microsoft YaHei','SimHei',sans-serif";
+        let txt = "游戏结束! 得分: "+score;
+        ctx.fillText(txt,canvas.width/2-ctx.measureText(txt).width/2,canvas.height/2-24);
+    }
+}
+
+// 判断锤子和地鼠区域是否重叠
+function collide(){
+    if(!mole.visible) return false;
+    let mx = mole.x; let my = mole.y-mole.h/2;
+    let hx = mouseX; let hy = mouseY;
+    return Math.abs(mx-hx)<(mole.w+hammer.w)/2 && Math.abs(my-hy)<(mole.h+hammer.h)/2;
+}
+
+// 游戏循环
+function gameLoop(){
+    let now=Date.now();
+    // 难度递增
+    let elapsed=now-startTime;
+    appearInterval = Math.max(180,700-Math.floor(elapsed/7000)*100);
+    moleDuration = Math.max(350,900-Math.floor(elapsed/7000)*110);
+
+    if(!gameover){
+        // 控制地鼠出现
+        if(!mole.visible && now-nextMoleTimer>appearInterval) newMole();
+        // 控制地鼠消失
+        if(mole.visible && now-moleTimer>moleDuration){
+            hideMole();
+            life--;
+            if(life<=0) {
+                gameover=true;
+                showBtn(true);
+            }
+        }
+    }
+    drawGame();
+    requestAnimationFrame(gameLoop);
+}
+
+// 鼠标事件
+canvas.onmousemove=function(e){
+    const rect=canvas.getBoundingClientRect();
+    mouseX=e.clientX-rect.left;
+    mouseY=e.clientY-rect.top;
+}
+canvas.onmousedown=function(e){
+    if(gameover) return;
+    hammer.animate=true; hammer.time=Date.now();
+    if(collide()){
+        score++;
+        hideMole();
+    }
+}
+canvas.onmouseup=function(){hammer.animate=false;};
+
+function showBtn(show){
+    resetBtn.style.display=show?"block":"none";
+}
+
+resetBtn.onclick=function(){ newGame(); };
+
+waitImages(()=>{
+    newGame();
+    gameLoop();
+});
+
+</script>
+</body>
+</html>
